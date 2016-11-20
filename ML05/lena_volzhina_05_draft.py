@@ -35,16 +35,36 @@ def plot_roc(xs, ys, filename):
 
 
 %cpaste
+def entropy(values):
+	result = 0
+	for class_size in Counter(values).values():
+		f_i = class_size / len(values)
+		result -= f_i * np.log2(f_i)
+	return result
+--
+
+
+%cpaste
+def get_predicate(is_numeric, feature, threshold):
+	if is_numeric:
+		return lambda x: x[feature] > threshold
+	else:
+		return lambda x: x[feature] == threshold
+--
+
+
+%cpaste
 class Node(object):
 	def __init__(self, **kwargs):
 		# p = probability of label=c1
 		self.is_leaf = kwargs.get('p') is not None
+		self.size = kwargs['size']
 		if self.is_leaf:
 			self.p = kwargs['p']
-			self.pred = self.right = self.left = None
+			self.predicate = self.right = self.left = None
 		else:
 			# it's inner node
-			self.predicate = kwargs['predicate']
+			self.predicate = get_predicate(*kwargs['predicate_params'])
 			self.left, self.right = kwargs['left'], kwargs['right']
 			self.p = None
 
@@ -56,16 +76,6 @@ class Node(object):
 				return self.right.process(x)
 			else:
 				return self.left.process(x)
---
-
-
-%cpaste
-def entropy(values):
-	result = 0
-	for class_size in Counter(values).values():
-		f_i = class_size / len(values)
-		result -= f_i * np.log2(f_i)
-	return result
 --
 
 
@@ -86,35 +96,39 @@ class Tree(object):
 
 		parent_entropy = entropy(self.y[indices])
 		n_rows = len(indices)
-		max_IG, max_f, threshold = None, None, None
+		max_IG, max_predicate = None, (None, None, None)
 		# iterate by features
 		for f in range(self.X.shape[1]):
 			# try to find threshold by this feature
 			values = self.X[indices, f]
+			is_numeric = all(isinstance(x, (float, int)) for x in values)
 			sort_indices = indices[np.argsort(values)]
 			for idx in sort_indices[self.min_size:n_rows - self.min_size + 1:self.threshold_step]:
 				value = self.X[idx, f]
 				# try to divide feature by this value:
 				# not very fast, TODO
-				is_greater = values > value
-				left, right = indices[~is_greater], indices[is_greater]
+				is_true = (values > value) if is_numeric else (values == value)
+				left, right = indices[~is_true], indices[is_true]
 				
 				if len(left) > self.min_size and len(right) > self.min_size:
 					IG = (parent_entropy - 
 						  len(left) / len(indices) * entropy(y[left]) -
 						  len(right) / len(indices) * entropy(y[right]))
 					if not max_IG or IG > max_IG:
-						max_IG, max_f, threshold = IG, f, value
+						max_IG = IG
+						max_predicate = is_numeric, f, value
 
-		print("   opt for {} indices: x[{}] > {} (IG = {})".format(len(indices), max_f, threshold, max_IG))
+		max_is_numeric, max_f, threshold = max_predicate
+		print("   opt for {} indices: x[{}] {} {} (IG = {})"
+			  .format(len(indices), max_f, '>' if max_is_numeric else '==', threshold, max_IG))
 		if max_IG and max_IG > 0:
-			return lambda x: x[max_f] > threshold
+			return max_predicate
 
 	def _learn_node(self, indices):
 		def simple_node():
 			most_common, freq = Counter(self.y[indices]).most_common(1)[0]
 			normed_freq = freq / len(indices)
-			return Node(p=normed_freq if most_common == 1 else (1 - normed_freq))
+			return Node(p=normed_freq if most_common == 1 else (1 - normed_freq), size=len(indices))
 
 		if len(set(self.y[indices])) == 1:
 			# all objects are in one class
@@ -125,12 +139,13 @@ class Tree(object):
 			return simple_node()
 
 		# find optimal predicate
-		predicate = self._find_predicate(indices)
-		if predicate is None:
+		predicate_params = self._find_predicate(indices)
+		if predicate_params is None:
 			# none of possible predicates are profitable
 			return simple_node()
 		
 		# make child nodes
+		predicate = get_predicate(*predicate_params)
 		true_values = np.apply_along_axis(predicate, 1, self.X[indices])
 		left_indices, right_indices = indices[~true_values], indices[true_values]
 		print('left, right:', len(left_indices), len(right_indices))
@@ -142,10 +157,9 @@ class Tree(object):
 		print(len(indices), "started children")
 		left, right = self._learn_node(left_indices), self._learn_node(right_indices)
 		print(len(indices), "calculated children")
-		return Node(predicate=predicate, left=left, right=right)
+		return Node(predicate_params=predicate_params, 
+			        left=left, right=right, size=len(indices))
 --
-
-
 
 
 
@@ -169,33 +183,44 @@ print("Learn dataset shape: {}, test dataset shape: {}".format(X.shape, X_test.s
 # OK, auc calculation seems to be correct
 
 
+def try_drop_float_features():
+	float_features = [f for f in range(X.shape[1])
+	                  if all(isinstance(x, (float, int)) for x in X[:, f])]
+	X, X_test = X[:, float_features], X_test[:, float_features]
 
-float_features = [f for f in range(X.shape[1])
-                  if all(isinstance(x, (float, int)) for x in X[:, f])]
-X, X_test = X[:, float_features], X_test[:, float_features]
+	def plot_features(X, normed=False):
+		plt.figure(figsize=(10, 80))
+		n_features = X.shape[1]
+		c0 = y == 0
+		plt.subplots_adjust(hspace=.4)
+		for f in range(n_features):
+			print(f)
+			values = X[:, f]
+			plt.subplot(n_features, 1, f + 1)
+			plt.title('f_{}'.format(f))
+			plt.yscale('log')
+			plt.hist((values[c0], values[~c0]), color=['r', 'g'], normed=normed)
+		plt.savefig('features_hist{}.png'.format('_normed' if normed else ''))
 
-def plot_features(X, normed=False):
-	plt.figure(figsize=(10, 80))
-	n_features = X.shape[1]
-	c0 = y == 0
-	plt.subplots_adjust(hspace=.4)
-	for f in range(n_features):
-		print(f)
-		values = X[:, f]
-		plt.subplot(n_features, 1, f + 1)
-		plt.title('f_{}'.format(f))
-		plt.yscale('log')
-		plt.hist((values[c0], values[~c0]), color=['r', 'g'], normed=normed)
-	plt.savefig('features_hist{}.png'.format('_normed' if normed else ''))
+	# plot_features(X)
+	# plot_features(X, normed=True)
 
-# plot_features(X)
-# plot_features(X, normed=True)
+	tree = Tree(threshold_step=10, min_size=10)
+	tree.fit(X, y)
+	y_predicted = np.array([tree.root.process(x) for x in X_test])
+	save_submission('submission_simple.csv', X_test_idxs, y_predicted)
+	# 30m, auc=0.64
 
+
+from datetime import datetime
 
 def try_to_predict(N=1000):
 	tree = Tree()
+	dt = datetime.now()
 	tree.fit(X[:N], y[:N])
+	sec = (datetime.now() - dt).total_seconds()
 	y_predicted = np.array([tree.root.process(x) for x in X[:N]])
+	print("\n\n{} rows for {}m {}s".format(N, int(sec // 60), int(sec % 60)))
 	_, auc = get_ROC_and_AUC(y_predicted, y[:N])
 	return auc
 
@@ -203,4 +228,4 @@ def try_to_predict(N=1000):
 tree = Tree(threshold_step=10, min_size=10)
 tree.fit(X, y)
 y_predicted = np.array([tree.root.process(x) for x in X_test])
-save_submission('submission_simple.csv', X_test_idx, y_predicted)
+save_submission('submission_simple_all_features_10_10.csv', X_test_idxs, y_predicted)
