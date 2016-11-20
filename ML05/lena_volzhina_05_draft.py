@@ -64,7 +64,7 @@ def entropy(values):
 	result = 0
 	for class_size in Counter(values).values():
 		f_i = class_size / len(values)
-		result -= f_i * np.log(f_i)
+		result -= f_i * np.log2(f_i)
 	return result
 --
 
@@ -78,54 +78,58 @@ class Tree(object):
 		self.root = self._learn_node(np.arange(len(X)))
 
 	def _find_predicate(self, indices):
-		print("  find pred for {} indices".format(len(indices)))
-		parent_entropy = entropy(self.y[indices])
-		def information_gain(*children):
-			result = parent_entropy
-			for child_indices in children:
-				result -= entropy(self.y[child_indices])
-			return result
+		print("   find pred for {} indices".format(len(indices)))
 
-		max_IG, max_f, max_threshold_idx = None, None, None
+		parent_entropy = entropy(self.y[indices])
+		n_rows = len(indices)
+		max_IG, max_f, threshold = None, None, None
 		# iterate by features
 		for f in range(self.X.shape[1]):
-			values = self.X[indices, f]
-
 			# try to find threshold by this feature
-			sort_indices = indices[np.argsort(values)]
-			for threshold in range(self.min_size, len(indices) - self.min_size + 1, self.threshold_step):
-				IG = information_gain(sort_indices[:threshold], indices[threshold:])
-				if not max_IG or IG > max_IG:
-					max_IG, max_f, max_threshold_idx = IG, f, sort_indices[threshold]
+			values = self.X[indices, f]
+			for value in set(values):
+				# try to divide feature by this value:
+				is_greater = values > value
+				left, right = indices[~is_greater], indices[is_greater]
+				
+				if len(left) > self.min_size and len(right) > self.min_size:
+					IG = (parent_entropy - 
+						  len(left) / len(indices) * entropy(y[left]) -
+						  len(right) / len(indices) * entropy(y[right]))
+					if not max_IG or IG > max_IG:
+						max_IG, max_f, threshold = IG, f, value
 
-		threshold = self.X[max_threshold_idx, max_f]
-		print("opt for {} indices: x[{}] > {} (IG = {})".format(len(indices), max_f, threshold, max_IG))
-		return lambda x: x[max_f] > threshold
+		print("   opt for {} indices: x[{}] > {} (IG = {})".format(len(indices), max_f, threshold, max_IG))
+		if max_IG and max_IG > 0:
+			return lambda x: x[max_f] > threshold
 
 	def _learn_node(self, indices):
-		if len(set(self.y[indices])) == 1:
-			# all objects are in one class
-			most_common = self.y[indices][0]
-			return Node(p=most_common)
-
-		if len(indices) < 2 * self.min_size:
-			# too small, must be leaf
+		def simple_node():
 			most_common, freq = Counter(self.y[indices]).most_common(1)[0]
 			normed_freq = freq / len(indices)
 			return Node(p=normed_freq if most_common == 1 else (1 - normed_freq))
 
+		if len(set(self.y[indices])) == 1:
+			# all objects are in one class
+			return simple_node()
+
+		if len(indices) < 2 * self.min_size:
+			# too small, must be leaf
+			return simple_node()
+
 		# find optimal predicate
 		predicate = self._find_predicate(indices)
-		true_values = np.apply_along_axis(predicate, 1, self.X[indices])
+		if predicate is None:
+			# none of possible predicates are profitable
+			return simple_node()
 		
 		# make child nodes
+		true_values = np.apply_along_axis(predicate, 1, self.X[indices])
 		left_indices, right_indices = indices[~true_values], indices[true_values]
 		print('left, right:', len(left_indices), len(right_indices))
 		if len(left_indices) * len(right_indices) == 0:
 			# one of them is empty
-			most_common, freq = Counter(self.y[indices]).most_common(1)[0]
-			normed_freq = freq / len(indices)
-			return Node(p=normed_freq if most_common == 1 else (1 - normed_freq))
+			return simple_node()
 
 		# have two full clild nodes
 		print(len(indices), "started children")
@@ -157,32 +161,33 @@ print("Learn dataset shape: {}, test dataset shape: {}".format(X.shape, X_test.s
 # plot_roc(*roc, 'roc_random.png')
 # OK, auc calculation seems to be correct
 
-def try_drop_not_float():
-	float_features = [f for f in range(X.shape[1])
-	                  if all(isinstance(x, (float, int)) for x in X[:, f])]
-	X, X_test = X[:, float_features], X_test[:, float_features]
 
-	def plot_features(X, normed=False):
-		plt.figure(figsize=(10, 80))
-		n_features = X.shape[1]
-		c0 = y == 0
-		plt.subplots_adjust(hspace=.4)
-		for f in range(n_features):
-			print(f)
-			values = X[:, f]
-			plt.subplot(n_features, 1, f + 1)
-			plt.title('f_{}'.format(f))
-			plt.yscale('log')
-			plt.hist((values[c0], values[~c0]), color=['r', 'g'], normed=normed)
-		plt.savefig('features_hist{}.png'.format('_normed' if normed else ''))
 
-	# plot_features(X)
-	# plot_features(X, normed=True)
+float_features = [f for f in range(X.shape[1])
+                  if all(isinstance(x, (float, int)) for x in X[:, f])]
+X, X_test = X[:, float_features], X_test[:, float_features]
+
+def plot_features(X, normed=False):
+	plt.figure(figsize=(10, 80))
+	n_features = X.shape[1]
+	c0 = y == 0
+	plt.subplots_adjust(hspace=.4)
+	for f in range(n_features):
+		print(f)
+		values = X[:, f]
+		plt.subplot(n_features, 1, f + 1)
+		plt.title('f_{}'.format(f))
+		plt.yscale('log')
+		plt.hist((values[c0], values[~c0]), color=['r', 'g'], normed=normed)
+	plt.savefig('features_hist{}.png'.format('_normed' if normed else ''))
+
+# plot_features(X)
+# plot_features(X, normed=True)
 
 
 def try_to_predict(N=100):
 	tree = Tree()
 	tree.fit(X[:N], y[:N])
 	y_predicted = np.array([tree.root.process(x) for x in X[:N]])
-	_, auc = get_ROC_and_AUC(y_predicted, y)
+	_, auc = get_ROC_and_AUC(y_predicted, y[:N])
 	return auc
