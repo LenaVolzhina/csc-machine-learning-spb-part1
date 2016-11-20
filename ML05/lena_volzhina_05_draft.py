@@ -71,9 +71,13 @@ def entropy(values):
 
 %cpaste
 class Tree(object):
+	def __init__(self, threshold_step=10, min_size=10):
+		self.X, self.y = None, None
+		self.root = None
+		self.threshold_step, self.min_size = threshold_step, min_size
+
 	def fit(self, X, y):
 		self.X, self.y = X, y
-		self.min_size , self.threshold_step = 10, 10
 
 		self.root = self._learn_node(np.arange(len(X)))
 
@@ -87,8 +91,11 @@ class Tree(object):
 		for f in range(self.X.shape[1]):
 			# try to find threshold by this feature
 			values = self.X[indices, f]
-			for value in set(values):
+			sort_indices = indices[np.argsort(values)]
+			for idx in sort_indices[self.min_size:n_rows - self.min_size + 1:self.threshold_step]:
+				value = self.X[idx, f]
 				# try to divide feature by this value:
+				# not very fast, TODO
 				is_greater = values > value
 				left, right = indices[~is_greater], indices[is_greater]
 				
@@ -185,9 +192,15 @@ def plot_features(X, normed=False):
 # plot_features(X, normed=True)
 
 
-def try_to_predict(N=100):
+def try_to_predict(N=1000):
 	tree = Tree()
 	tree.fit(X[:N], y[:N])
 	y_predicted = np.array([tree.root.process(x) for x in X[:N]])
 	_, auc = get_ROC_and_AUC(y_predicted, y[:N])
 	return auc
+
+
+tree = Tree(threshold_step=10, min_size=10)
+tree.fit(X, y)
+y_predicted = np.array([tree.root.process(x) for x in X_test])
+save_submission('submission_simple.csv', X_test_idx, y_predicted)
