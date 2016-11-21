@@ -168,7 +168,7 @@ def save_submission(path, ids, answers):
 		writer = csv.writer(file)
 		writer.writerow(['id', 'label'])
 		for i, answer in zip(ids, answers):
-			writer.writerow([int(i.item()), int(answer.item())])
+			writer.writerow([int(i.item()), answer.item()])
 
 
 dataset = pd.read_csv("learn.csv")
